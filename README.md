@@ -31,7 +31,7 @@ npm run dev
   - 确认到货（可登记实际克重与实际单价）后入库存、记实际支出；手动添加采购项
   - 按配餐逐日确认消耗或手动消耗，自动扣减库存（不足或缺料给出明细），并累计**本周限次用量**
   - 库存变化同步：**预算**（已采购 / 待买占用 / 预计总支出 / 余额 / 超支 / 价格偏差 / 库存估值）、**过敏规避**（在库 / 待买致敏食材预警）、**后续配餐**（在库食材优先、库存内零边际采购成本、净采购预算约束、库存与限次逐日结转）
-  - 采购周切换：未到货任务与库存结转、限次计数清零；状态持久化于 `data/household.json`
+  - 采购周切换：周菜单按生成时周期标记版本，切换时上周菜单连同已确认日归档（可追溯但不可再确认消耗，杜绝跨周期重复入账），未到货任务与库存结转、限次计数清零；状态持久化于 `data/household.json`
 - **营养可视化**：三餐卡片、热量达成度、宏量供能比条、微量营养素达标度网格、周多样性统计、采购库存看板（预算卡片 / 成员卡片 / 采购表 / 逐日消耗 / 库存表 / 预警）。
 
 ## 目录结构
@@ -48,7 +48,7 @@ nutrition_planner/
 │   └── index.html        # 单页前端（单日配餐 / 周菜单 / 采购与库存三视图）
 ├── tests/
 │   ├── run_tests.js          # 34 项配餐引擎自动化测试
-│   └── run_household_tests.js # 30 项采购库存与库存联动配餐测试
+│   └── run_household_tests.js # 35 项采购库存与库存联动配餐测试
 ├── data/                 # 家庭状态持久化（自动生成，已在 .gitignore）
 ├── server.js             # HTTP 服务与 REST API
 ├── start.js              # 一键启动（自动选端口 + 打开浏览器）
@@ -73,10 +73,10 @@ nutrition_planner/
 | `/api/household/shopping/:id/assign` | POST | 改派采购负责人 |
 | `/api/household/shopping/:id/arrive` | POST | 确认到货（实际克重 / 实际单价，入库存并记账） |
 | `/api/household/shopping/:id` | DELETE | 删除采购任务 |
-| `/api/household/consume/day/:d` | POST | 按第 d 天配餐确认消耗（校验缺料、扣库存、累计限次） |
+| `/api/household/consume/day/:d` | POST | 按第 d 天配餐确认消耗（仅限当前周期菜单；校验缺料、扣库存、累计限次） |
 | `/api/household/consume` | POST | 手动消耗指定克重（不可超扣） |
 | `/api/household/stock` | POST | 期初 / 盘库录入（填 0 清除） |
-| `/api/household/cycle` | POST | 开启新采购周（待买与库存结转、限次清零） |
+| `/api/household/cycle` | POST | 开启新采购周（上周菜单归档可追溯、待买与库存结转、限次清零） |
 
 `/api/plan`、`/api/week` 在原有参数外支持 `stock: {食材id: 在库毛重克}`：在库食材优先入选、库存覆盖部分零边际采购成本，
 响应增加 `purchase_cost`（库存抵扣后的净采购额，预算按此口径约束）、`stock_used` 与消耗后的 `stock_remaining`；
@@ -99,10 +99,10 @@ nutrition_planner/
 
 ```bash
 npm test            # 配餐引擎 34 项
-npm run test:household  # 采购库存 30 项
-npm run test:all    # 全部 64 项
+npm run test:household  # 采购库存 35 项
+npm run test:all    # 全部 69 项
 ```
 
 测试覆盖食材数据库完整性、能量守恒、参考摄入量分层、单日约束求解、过敏原 / 排除项过滤、周限次、周菜单轮换与确定性，
 以及家庭成员 / 过敏原并集、净需求聚合与安全余量取整、负载分工、库存与待买抵扣、到货实际价、消耗与缺料拦截、
-预算同步与超支、库存优先配餐、净采购预算约束、周菜单库存逐日结转、周期切换与三类预警（过敏 / 超支 / 缺料）。
+预算同步与超支、库存优先配餐、净采购预算约束、周菜单库存逐日结转、周期切换（菜单版本归档、跨周期重复入账拦截）与三类预警（过敏 / 超支 / 缺料）。

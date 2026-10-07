@@ -643,7 +643,9 @@ function renderShopping(h) {
 function renderDays(h) {
   const el = $("#hh_days");
   if (!h.week || !h.week.plan) {
-    el.innerHTML = `<div style="font-size:13px;color:#6b7d70">点击上方「按周菜单生成 / 刷新采购清单」后，可在此逐日确认到货食材的实际消耗。</div>`;
+    const hist = h.week_history || [];
+    const last = hist.length ? hist[hist.length - 1] : null;
+    el.innerHTML = `<div style="font-size:13px;color:#6b7d70">${last ? `上周（第 ${last.cycle} 周）菜单已随周期切换归档（已确认 ${last.consumed_days.length}/${last.days} 天），历史可追溯但不可重复入账。` : ""}点击上方「按周菜单生成 / 刷新采购清单」生成本周菜单后，可在此逐日确认到货食材的实际消耗。</div>`;
     return;
   }
   el.innerHTML = h.week.plan.days.map((day, idx) => {
@@ -780,7 +782,7 @@ $("#hh_add_stock").onclick = () => stockModal();
 $("#hh_edit_budget").onclick = () => budgetModal();
 $("#hh_build").onclick = buildShoppingFromWeek;
 $("#hh_new_cycle").onclick = async () => {
-  if (!confirm("开启新的采购周？未到货任务会结转、库存保留、周限次计数清零。")) return;
+  if (!confirm("开启新的采购周？未到货任务会结转、库存保留、周限次计数清零，上周菜单将归档（可追溯但不可再确认消耗）。")) return;
   await hhCall("/api/household/cycle", {});
 };
 

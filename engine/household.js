@@ -6,7 +6,9 @@
    3. 确认到货（可登记实际克重与实际单价）后入库存并计入实际支出，含过敏原食材拦截；
    4. 按配餐 / 手动消耗扣减库存，并累计本周已用次数（供食材周限次约束使用）；
    5. 库存变化同步预算（已采购 / 待买 / 剩余）、过敏规避（在库致敏预警）与后续配餐
-      （库存优先、零边际采购成本、weekly_used 限次）。
+      （库存优先、零边际采购成本、weekly_used 限次）；
+   6. 周菜单按生成时周期标记版本，开启新采购周时归档（可追溯但不可再确认消耗），
+      待买任务结转至新周期、限次计数清零，杜绝跨周期重复入账。
    所有克重均与配餐一致，使用毛重（计价口径）。状态为纯数据对象，便于持久化与测试。 */
 
 const { getFood, costFor, ALLERGENS } = require("./foods");
@@ -30,7 +32,8 @@ function emptyHousehold() {
     consumption: [],        // {id, cycle, food_id, grams, source:"plan"|"manual", day_index, member}
     stock_manual: {},       // 期初 / 盘库入库（非采购渠道）{food_id: grams}
     consumed_days: [],      // 当前周期已按配餐消耗的日序号
-    week: null,             // 最近一次联动生成的周菜单 {params, plan}
+    week: null,             // 当前周期生效的周菜单 {cycle, params, plan}，周期切换时归档失效
+    week_history: [],       // 已归档的历史周菜单 [{cycle, params, plan, consumed_days}]，可追溯但不可再确认消耗
     next_item_id: 1,
     next_log_id: 1,
   };
@@ -346,13 +349,28 @@ function consume(state, input) {
 }
 
 function setWeek(state, params, plan) {
-  state.week = { params: params || null, plan: plan || null };
+  /* 菜单版本绑定生成时所属周期；周期切换后菜单即失效，防止跨周期重复入账 */
+  state.week = { cycle: state.cycle_no, params: params || null, plan: plan || null };
 }
 
-/* 按周菜单中某一天的配餐一次性消耗（克重与配餐一致）；每日不可重复确认 */
+/* 当前周期生效的周菜单；历史持久化数据缺少 cycle 标记时视为当前周期菜单（兼容旧版状态文件） */
+function activeWeek(state) {
+  const w = state.week;
+  if (!w || !w.plan) return null;
+  const cyc = Number.isInteger(w.cycle) ? w.cycle : state.cycle_no;
+  return cyc === state.cycle_no ? w : null;
+}
+
+/* 按周菜单中某一天的配餐一次性消耗（克重与配餐一致）；每日不可重复确认，且仅限当前周期生效的菜单 */
 function consumeDay(state, dayIndex) {
-  if (!state.week || !state.week.plan) throw new Error("尚未生成联动周菜单");
-  const plan = state.week.plan;
+  const week = activeWeek(state);
+  if (!week) {
+    if (state.week && state.week.plan) {
+      throw new Error("上周菜单已随采购周期切换归档，不能重复入账；请重新生成本周菜单");
+    }
+    throw new Error("尚未生成联动周菜单");
+  }
+  const plan = week.plan;
   dayIndex = Number(dayIndex);
   if (!(dayIndex >= 0 && dayIndex < plan.days.length)) throw new Error("日期序号非法");
   if (state.consumed_days.includes(dayIndex)) throw new Error("该日配餐已确认消耗");
@@ -395,6 +413,17 @@ function setManualStock(state, foodId, grams) {
 /* ---------------- 周期与配餐同步 ---------------- */
 
 function startNewCycle(state) {
+  /* 当前周菜单连同已确认消耗日一并归档：旧周可追溯，但不再接受消耗确认（防止跨周期重复入账） */
+  if (state.week && state.week.plan) {
+    if (!Array.isArray(state.week_history)) state.week_history = [];
+    state.week_history.push({
+      cycle: Number.isInteger(state.week.cycle) ? state.week.cycle : state.cycle_no,
+      params: state.week.params || null,
+      plan: state.week.plan,
+      consumed_days: [...state.consumed_days],
+    });
+  }
+  state.week = null;
   state.cycle_no += 1;
   /* 未到货任务结转至新周期继续采购；已到货条目保留旧周期标签用于库存核算 */
   for (const it of state.shopping) if (it.status === "pending") it.cycle = state.cycle_no;
@@ -442,13 +471,14 @@ function warnings(state, onHand) {
     out.push({ level: "danger", code: "budget_over", text: `本周预计支出 ¥${budget.projected} 超出预算 ¥${budget.budget}，超支 ¥${round2(-budget.remaining)}` });
   }
 
-  if (state.week && state.week.plan) {
+  const week = activeWeek(state);
+  if (week) {
     const pendingGrams = {};
     for (const it of currentItems(state)) {
       if (it.status === "pending") pendingGrams[it.food_id] = (pendingGrams[it.food_id] || 0) + it.grams;
     }
     const need = {};
-    state.week.plan.days.forEach((day, idx) => {
+    week.plan.days.forEach((day, idx) => {
       if (state.consumed_days.includes(idx)) return;
       for (const it of day.items) need[it.food_id] = (need[it.food_id] || 0) + it.grams;
     });
@@ -508,6 +538,13 @@ function householdView(state) {
     warnings: warnings(state, on),
     consumed_days: [...state.consumed_days],
     week: state.week,
+    /* 历史周菜单摘要（完整数据在 state.week_history），供前端追溯展示 */
+    week_history: (Array.isArray(state.week_history) ? state.week_history : []).map(x => ({
+      cycle: x.cycle,
+      consumed_days: [...(x.consumed_days || [])],
+      days: x.plan && Array.isArray(x.plan.days) ? x.plan.days.length : 0,
+      weekly_cost: x.plan && x.plan.weekly_cost != null ? x.plan.weekly_cost : null,
+    })),
   };
 }
 
@@ -517,6 +554,6 @@ module.exports = {
   addMember, updateMember, removeMember,
   stockOnHand, inventoryValue, budgetSummary,
   buildShoppingList, addManualItem, assignItem, removeItem, arriveItem,
-  consume, consumeDay, setManualStock, setWeek, startNewCycle,
+  consume, consumeDay, setManualStock, setWeek, activeWeek, startNewCycle,
   weeklyUsed, syncInputs, warnings, householdView,
 };
