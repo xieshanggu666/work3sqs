@@ -30,7 +30,7 @@ function emptyHousehold() {
     consumption: [],        // {id, cycle, food_id, grams, source:"plan"|"manual", day_index, member}
     stock_manual: {},       // 期初 / 盘库入库（非采购渠道）{food_id: grams}
     consumed_days: [],      // 当前周期已按配餐消耗的日序号
-    week: null,             // 最近一次联动生成的周菜单 {params, plan}
+    week: null,             // 最近一次联动生成的周菜单 {cycle, params, plan}，cycle 为菜单所属采购周
     next_item_id: 1,
     next_log_id: 1,
   };
@@ -346,12 +346,27 @@ function consume(state, input) {
 }
 
 function setWeek(state, params, plan) {
-  state.week = { params: params || null, plan: plan || null };
+  /* 菜单版本与采购周期绑定：周期切换后旧菜单仅可追溯，不可再次确认入账 */
+  state.week = { cycle: state.cycle_no, params: params || null, plan: plan || null };
 }
 
-/* 按周菜单中某一天的配餐一次性消耗（克重与配餐一致）；每日不可重复确认 */
+/* 当前联动菜单是否属于本采购周 */
+function weekIsCurrent(state) {
+  return !!(state.week && state.week.plan && state.week.cycle === state.cycle_no);
+}
+
+/* 按周菜单中某一天的配餐一次性消耗（克重与配餐一致）；每日不可重复确认，
+   且菜单必须属于当前采购周——旧周菜单的消耗记录保留在原周期可追溯，但不能在新周期重复入账 */
 function consumeDay(state, dayIndex) {
   if (!state.week || !state.week.plan) throw new Error("尚未生成联动周菜单");
+  if (!weekIsCurrent(state)) {
+    const err = new Error(
+      `该菜单属于第 ${state.week.cycle == null ? "?" : state.week.cycle} 采购周，当前为第 ${state.cycle_no} 周：` +
+      `旧周消耗记录保留可追溯，但不能重复入账，请重新生成本周菜单`
+    );
+    err.code = "STALE_WEEK";
+    throw err;
+  }
   const plan = state.week.plan;
   dayIndex = Number(dayIndex);
   if (!(dayIndex >= 0 && dayIndex < plan.days.length)) throw new Error("日期序号非法");
@@ -398,6 +413,8 @@ function startNewCycle(state) {
   state.cycle_no += 1;
   /* 未到货任务结转至新周期继续采购；已到货条目保留旧周期标签用于库存核算 */
   for (const it of state.shopping) if (it.status === "pending") it.cycle = state.cycle_no;
+  /* 消耗日序按周期重新计数；历史消耗记录保留原周期标签（库存核算与追溯不受影响），
+     旧周菜单因 cycle 标签过期自动失效，不可在新周期重复入账 */
   state.consumed_days = [];
 }
 
@@ -442,7 +459,8 @@ function warnings(state, onHand) {
     out.push({ level: "danger", code: "budget_over", text: `本周预计支出 ¥${budget.projected} 超出预算 ¥${budget.budget}，超支 ¥${round2(-budget.remaining)}` });
   }
 
-  if (state.week && state.week.plan) {
+  /* 缺料预警仅针对本周期菜单；旧周菜单已过期，不再驱动新周期的采购提示 */
+  if (weekIsCurrent(state)) {
     const pendingGrams = {};
     for (const it of currentItems(state)) {
       if (it.status === "pending") pendingGrams[it.food_id] = (pendingGrams[it.food_id] || 0) + it.grams;
@@ -508,6 +526,8 @@ function householdView(state) {
     warnings: warnings(state, on),
     consumed_days: [...state.consumed_days],
     week: state.week,
+    week_cycle: state.week ? state.week.cycle != null ? state.week.cycle : null : null,
+    week_stale: !!(state.week && state.week.plan && !weekIsCurrent(state)),
   };
 }
 
@@ -518,5 +538,5 @@ module.exports = {
   stockOnHand, inventoryValue, budgetSummary,
   buildShoppingList, addManualItem, assignItem, removeItem, arriveItem,
   consume, consumeDay, setManualStock, setWeek, startNewCycle,
-  weeklyUsed, syncInputs, warnings, householdView,
+  weeklyUsed, syncInputs, warnings, householdView, weekIsCurrent,
 };

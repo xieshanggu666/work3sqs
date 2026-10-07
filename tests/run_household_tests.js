@@ -341,6 +341,73 @@ t("开启新周期：待买任务结转、周限次清零、库存保留", () =>
   assert.strictEqual(hh.stockOnHand(s).apple, 200);
 });
 
+t("新周期后旧周菜单不可重复入账：库存不再扣减、新周限次不被污染", () => {
+  const s = hh.emptyHousehold();
+  hh.addMember(s, { name: "爸爸" });
+  const w = weekPlan({ profile: PROF, budget: 30, allergens: [], exclude: [] });
+  hh.setWeek(s, { budget: 30 }, w);
+  assert.strictEqual(s.week.cycle, 1);
+  /* 充足库存，排除缺料拦截干扰 */
+  const need = {};
+  for (const day of w.days) for (const it of day.items) need[it.food_id] = (need[it.food_id] || 0) + it.grams;
+  for (const [id, g] of Object.entries(need)) hh.setManualStock(s, id, g * 3);
+  hh.consumeDay(s, 0);
+  const stockBefore = hh.stockOnHand(s);
+  const logsBefore = s.consumption.length;
+  hh.startNewCycle(s);
+  /* 旧周菜单仍保留（可追溯），但确认消耗被拒绝且报 STALE_WEEK */
+  assert(s.week && s.week.plan);
+  assert.strictEqual(hh.weekIsCurrent(s), false);
+  let code = null;
+  try { hh.consumeDay(s, 0); } catch (e) { code = e.code; }
+  assert.strictEqual(code, "STALE_WEEK");
+  /* 库存未再次扣减、消耗记录未新增、新周限次未被污染 */
+  assert.deepStrictEqual(hh.stockOnHand(s), stockBefore);
+  assert.strictEqual(s.consumption.length, logsBefore);
+  assert.deepStrictEqual(hh.weeklyUsed(s), {});
+  /* 旧周消耗记录保留原周期标签，可追溯 */
+  assert(s.consumption.length > 0);
+  assert(s.consumption.every(l => l.cycle === 1));
+});
+
+t("新周期重新生成本周菜单后可正常确认消耗并入账到新周期", () => {
+  const s = hh.emptyHousehold();
+  const w1 = weekPlan({ profile: PROF, budget: 30, allergens: [], exclude: [] });
+  hh.setWeek(s, { budget: 30 }, w1);
+  const need = {};
+  for (const day of w1.days) for (const it of day.items) need[it.food_id] = (need[it.food_id] || 0) + it.grams;
+  for (const [id, g] of Object.entries(need)) hh.setManualStock(s, id, g * 5);
+  hh.consumeDay(s, 0);
+  hh.startNewCycle(s);
+  /* 新周期生成新菜单：版本号跟随周期，确认消耗正常入账 */
+  const w2 = weekPlan({ profile: PROF, budget: 30, allergens: [], exclude: [] });
+  hh.setWeek(s, { budget: 30 }, w2);
+  assert.strictEqual(s.week.cycle, 2);
+  assert.strictEqual(hh.weekIsCurrent(s), true);
+  const logs = hh.consumeDay(s, 0);
+  assert(logs.length > 0);
+  assert(logs.every(l => l.cycle === 2));
+  assert(Object.keys(hh.weeklyUsed(s)).length > 0);
+  assert(s.consumption.some(l => l.cycle === 1), "旧周记录仍保留");
+});
+
+t("周期切换后缺料预警不再依据旧周菜单，视图标记菜单过期", () => {
+  const s = hh.emptyHousehold();
+  const w = weekPlan({ profile: PROF, budget: 30, allergens: [], exclude: [] });
+  hh.setWeek(s, { budget: 30 }, w);
+  /* 无库存无采购 -> 当前周期有缺料预警，且菜单未过期 */
+  assert(hh.warnings(s).some(x => x.code === "shortage"));
+  let v = hh.householdView(s);
+  assert.strictEqual(v.week_stale, false);
+  assert.strictEqual(v.week_cycle, 1);
+  hh.startNewCycle(s);
+  /* 旧周菜单不再驱动新周期缺料预警，视图标记过期 */
+  assert(!hh.warnings(s).some(x => x.code === "shortage"));
+  v = hh.householdView(s);
+  assert.strictEqual(v.week_stale, true);
+  assert.strictEqual(v.week_cycle, 1);
+});
+
 t("预警：在库含全家过敏原 / 超预算 / 后续缺料", () => {
   const s = hh.emptyHousehold();
   hh.addMember(s, { name: "宝宝", allergens: ["乳"] });

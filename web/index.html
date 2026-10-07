@@ -646,14 +646,22 @@ function renderDays(h) {
     el.innerHTML = `<div style="font-size:13px;color:#6b7d70">点击上方「按周菜单生成 / 刷新采购清单」后，可在此逐日确认到货食材的实际消耗。</div>`;
     return;
   }
-  el.innerHTML = h.week.plan.days.map((day, idx) => {
-    const done = h.consumed_days.includes(idx);
+  const stale = !!h.week_stale;
+  /* 旧周菜单：从消耗记录还原该周已确认日序（可追溯），但禁止再次入账 */
+  const doneDays = stale
+    ? new Set((h.state.consumption || []).filter(l => l.source === "plan" && l.cycle === h.week.cycle && l.day_index != null).map(l => l.day_index))
+    : new Set(h.consumed_days);
+  const banner = stale
+    ? `<div style="padding:10px 12px;margin-bottom:10px;border-radius:10px;background:#fff8ec;border:1px solid #f0dfc0;font-size:13px;color:#8a6d1a">该菜单属于第 ${h.week.cycle == null ? "?" : h.week.cycle} 采购周，当前已进入第 ${h.state.cycle_no} 周：以下记录仅供追溯，不能重复入账。请重新「按周菜单生成 / 刷新采购清单」后再确认消耗。</div>`
+    : "";
+  el.innerHTML = banner + h.week.plan.days.map((day, idx) => {
+    const done = doneDays.has(idx);
     return `<div class="day-consume ${done ? "done" : ""}">
       <div class="info"><b>${day.day_name}</b><span>${day.items.length} 项 · 菜单 ¥${day.cost.toFixed(1)}${day.purchase_cost != null ? ` · 净采购 ¥${day.purchase_cost.toFixed(1)}` : ""}</span>${done ? '<span class="mini-tag ok">已消耗并扣库存</span>' : ""}</div>
-      <button class="btn ${done ? "ghost" : ""}" data-consume-day="${idx}" ${done ? "disabled" : ""}>${done ? "已确认" : "确认当日消耗"}</button>
+      <button class="btn ${done || stale ? "ghost" : ""}" data-consume-day="${idx}" ${done || stale ? "disabled" : ""}>${done ? "已确认" : stale ? "已过期" : "确认当日消耗"}</button>
     </div>`;
   }).join("");
-  $$("[data-consume-day]").forEach(b => b.onclick = () => hhCall(`/api/household/consume/day/${b.dataset.consume_day}`, {}));
+  if (!stale) $$("[data-consume-day]").forEach(b => b.onclick = () => hhCall(`/api/household/consume/day/${b.dataset.consume_day}`, {}));
 }
 
 function renderStock(h) {
